@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>SGRA - Almacén</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+    <!-- LOGIN SCREEN -->
+    <div id="login-screen" style="display:none">
+        <div class="login-card">
+            <h1>SGRA</h1>
+            <p>Sistema de Gestión de Reposición</p>
+            <div class="form-group">
+                <label>Usuario</label>
+                <input type="text" id="login-user" placeholder="ej: juan" autocomplete="username">
+            </div>
+            <div class="form-group">
+                <label>Contraseña</label>
+                <input type="password" id="login-pass" placeholder="Contraseña" autocomplete="current-password">
+            </div>
+            <button class="btn btn-primary btn-block" onclick="handleLogin()">Ingresar</button>
+        </div>
+    </div>
+
+    <!-- APP SCREEN -->
+    <div id="app-screen">
+        <div class="topbar" id="topbar"></div>
+        <div class="container" id="dashboard"></div>
+    </div>
+
+    <!-- FAB -->
+    <button class="fab" id="fab" onclick="openNewRequest()" title="Reportar faltante">+</button>
+
+    <!-- REQUEST MODAL (reused for multiple purposes) -->
+    <div class="modal-overlay" id="request-modal">
+        <div class="modal" id="modal-content"></div>
+    </div>
+
+    <!-- DETAIL MODAL -->
+    <div class="modal-overlay" id="detail-modal" onclick="if(event.target===this)closeModal('detail-modal')">
+        <div class="modal" id="detail-content"></div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
