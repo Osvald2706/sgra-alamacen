@@ -3,29 +3,38 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>SGRA - Almacén</title>
+    <title>SGRA - Control de Almacén</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 
-    <!-- LOGIN SCREEN -->
+    <!-- LOADING -->
+    <div id="loading-screen" class="loading-screen">
+        <div class="spinner"></div>
+        <p>Cargando SGRA...</p>
+    </div>
+
+    <!-- LOGIN -->
     <div id="login-screen" style="display:none">
         <div class="login-card">
             <h1>SGRA</h1>
-            <p>Sistema de Gestión de Reposición</p>
+            <p class="sub">Sistema de Gestión de Reposición</p>
             <div class="form-group">
                 <label>Usuario</label>
-                <input type="text" id="login-user" placeholder="ej: juan" autocomplete="username">
+                <input type="text" id="login-user" placeholder="Ingresa tu usuario" autocomplete="username">
             </div>
             <div class="form-group">
                 <label>Contraseña</label>
                 <input type="password" id="login-pass" placeholder="Contraseña" autocomplete="current-password">
             </div>
-            <button class="btn btn-primary btn-block" onclick="handleLogin()">Ingresar</button>
+            <button class="btn btn-primary btn-block" id="login-btn" onclick="handleLogin()">Ingresar</button>
         </div>
     </div>
 
-    <!-- APP SCREEN -->
+    <!-- APP -->
     <div id="app-screen">
         <div class="topbar" id="topbar"></div>
         <div class="container" id="dashboard"></div>
@@ -34,14 +43,9 @@
     <!-- FAB -->
     <button class="fab" id="fab" onclick="openNewRequest()" title="Reportar faltante">+</button>
 
-    <!-- REQUEST MODAL (reused for multiple purposes) -->
-    <div class="modal-overlay" id="request-modal">
-        <div class="modal" id="modal-content"></div>
-    </div>
-
-    <!-- DETAIL MODAL -->
-    <div class="modal-overlay" id="detail-modal" onclick="if(event.target===this)closeModal('detail-modal')">
-        <div class="modal" id="detail-content"></div>
+    <!-- MODAL -->
+    <div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this){closeModal('modal-overlay')}">
+        <div class="modal" id="modal-inner"></div>
     </div>
 
     <script src="/static/app.js"></script>
