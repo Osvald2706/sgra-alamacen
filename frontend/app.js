@@ -1,8 +1,6 @@
 const API = '';
-let state = { user: null, token: null, requests: [], products: [], allProducts: [] };
+let state = { user: null, token: null, requests: [], allProducts: [] };
 let currentTab = 'reportado';
-let searchTimeout = null;
-let selectedProduct = null;
 
 function $(id) { return document.getElementById(id); }
 
@@ -40,7 +38,6 @@ async function handleLogout() {
   try { await api('/api/logout', { method: 'POST' }); } catch (_) {}
   state.token = null; state.user = null;
   localStorage.removeItem('sgra_token'); localStorage.removeItem('sgra_user');
-  $('login-user').value = ''; $('login-pass').value = '';
   showLogin();
 }
 
@@ -49,7 +46,7 @@ async function initApp() { showApp(); renderTopbar(); await loadData(); }
 
 async function loadData() {
   try {
-    [state.requests, state.allProducts] = await Promise.all([api('/api/requests'), api('/api/products')]);
+    state.requests = await api('/api/requests');
     renderDashboard();
   } catch (e) { if (e.message.includes('Token') || e.message.includes('401')) handleLogout(); }
 }
@@ -109,10 +106,9 @@ function renderCard(r) {
   const badgeText = r.requires_attention ? '⚠️ Urgente' : r.status === 'reportado' ? 'Pendiente' : r.status === 'solicitado' ? 'Solicitado' : 'Recibido';
   let timeText = r.hours_elapsed < 1 ? 'Ahora' : r.hours_elapsed < 24 ? `Hace ${Math.floor(r.hours_elapsed)}h` : `Hace ${Math.floor(r.hours_elapsed/24)}d`;
   const hasNote = r.note && r.note.trim();
-
   return `<div class="card ${r.status} ${attn}" onclick="showDetail(${r.id})">
     <div class="card-header">
-      <div class="card-title">${r.product_name} ${r.product_code ? `<span class="card-code">${r.product_code}</span>` : ''}</div>
+      <div class="card-title">${r.product_name}</div>
       <span class="card-badge ${badgeCls}">${badgeText}</span>
     </div>
     <div class="card-meta">
@@ -139,7 +135,7 @@ async function showDetail(id) {
   const canDelete = state.user.role === 'admin' || r.requested_by === state.user.id;
   const icons = { reportado: '⏳', solicitado: '📤', recibido: '✅' };
   showModalContent('Detalle', `
-    <div class="detail-head"><span style="font-size:2rem">${icons[r.status]||'📦'}</span><div><h3 style="margin:0">${r.product_name}</h3>${r.product_code ? `<div class="text-muted text-sm">Código: ${r.product_code}</div>` : ''}</div></div>
+    <div class="detail-head"><span style="font-size:2rem">${icons[r.status]||'📦'}</span><div><h3 style="margin:0">${r.product_name}</h3></div></div>
     <div class="detail-field"><div class="detail-label">Cantidad</div><div class="detail-value">${r.quantity} uds</div></div>
     ${r.note ? `<div class="detail-field"><div class="detail-label">Nota</div><div class="detail-value">${r.note}</div></div>` : ''}
     <div class="detail-field"><div class="detail-label">Reportado por</div><div class="detail-value">${r.requester_name}</div></div>
@@ -163,99 +159,31 @@ function showModal(title, renderFn) { $('modal-overlay').classList.add('open'); 
 
 function showModalContent(title, html) { $('modal-overlay').classList.add('open'); $('modal-inner').innerHTML = `<div class="modal-header"><h3>${title}</h3><button class="btn btn-ghost btn-sm modal-x" onclick="closeModal('modal-overlay')">✕</button></div>${html}`; }
 
-/* ===== NEW REQUEST - Mobile friendly ===== */
+/* ===== NEW REQUEST - Free text ===== */
 function openNewRequest() {
-  selectedProduct = null;
   $('modal-overlay').classList.add('open');
-  $('modal-inner').innerHTML = buildProductBrowser('');
-  setTimeout(() => { const inp = $('search-input'); if (inp) inp.focus(); }, 300);
-}
-
-function buildProductBrowser(filter) {
-  const products = state.allProducts;
-  const filtered = filter ? products.filter(p =>
-    (p.code && p.code.toLowerCase().includes(filter.toLowerCase())) ||
-    p.name.toLowerCase().includes(filter.toLowerCase())
-  ) : products;
-
-  const cats = {};
-  filtered.forEach(p => {
-    if (!cats[p.category]) cats[p.category] = [];
-    cats[p.category].push(p);
-  });
-
-  let listHtml = '';
-  if (filtered.length === 0) {
-    listHtml = '<div class="empty-state" style="padding:2rem"><div class="icon">🔍</div><p>Sin resultados</p></div>';
-  } else {
-    for (const [cat, items] of Object.entries(cats)) {
-      listHtml += `<div class="cat-title">${cat}</div>`;
-      items.forEach(p => {
-        const isSelected = selectedProduct && selectedProduct.id === p.id;
-        listHtml += `<div class="prod-row ${isSelected ? 'selected' : ''}" onclick="pickProduct(${p.id},'${(p.code||'').replace(/'/g,"\\'")}','${p.name.replace(/'/g,"\\'")}','${(p.category||'').replace(/'/g,"\\'")}')">
-          ${p.code ? `<span class="prod-code">${p.code}</span>` : ''}
-          <span class="prod-name">${p.name}</span>
-        </div>`;
-      });
-    }
-  }
-
-  const selectedHtml = selectedProduct ? `
-    <div class="selected-chip">
-      <span class="sel-code">${selectedProduct.code || '—'}</span>
-      <span class="sel-name">${selectedProduct.name}</span>
-      <button class="sel-remove" onclick="clearPick()">✕</button>
-    </div>` : '';
-
-  const formHtml = selectedProduct ? `
-    <div class="req-form">
-      <div class="form-group"><label>Cantidad</label><input type="number" id="new-qty" value="1" min="1" inputmode="numeric"></div>
-      <div class="form-group"><label>Nota (opcional)</label><textarea id="new-note" placeholder="Ej: urgente..."></textarea></div>
-      <button class="btn btn-primary btn-block" id="submit-req-btn" onclick="submitRequest()">📦 Reportar faltante</button>
-    </div>` : '';
-
-  return `
-    <div class="modal-header"><h3>📦 Nuevo reporte</h3><button class="btn btn-ghost btn-sm modal-x" onclick="closeModal('modal-overlay')">✕</button></div>
-    <div class="search-box">
-      <span class="search-icon">🔍</span>
-      <input type="text" id="search-input" placeholder="Buscar por código o nombre..." value="${filter}" oninput="onSearchFilter(this.value)" autocomplete="off">
-    </div>
-    ${selectedHtml}
-    <div class="prod-list-scroll">${listHtml}</div>
-    ${formHtml}
+  $('modal-inner').innerHTML = `
+    <div class="modal-header"><h3>📦 Reportar faltante</h3><button class="btn btn-ghost btn-sm modal-x" onclick="closeModal('modal-overlay')">✕</button></div>
+    <div class="form-group"><label>¿Qué falta?</label><textarea id="nr-desc" placeholder="Ej: Caja de guantes talla L, 10 paquetes" rows="2" style="resize:vertical"></textarea></div>
+    <div class="form-group"><label>Cantidad</label><input type="number" id="nr-qty" value="1" min="1" inputmode="numeric"></div>
+    <div class="form-group"><label>Nota (opcional)</label><textarea id="nr-note" placeholder="Ej: urgente para pedido de mañana" rows="2" style="resize:vertical"></textarea></div>
+    <button class="btn btn-primary btn-block" id="nr-submit" onclick="submitRequest()">📦 Reportar faltante</button>
   `;
+  setTimeout(() => { const inp = $('nr-desc'); if (inp) inp.focus(); }, 300);
 }
-
-function onSearchFilter(val) {
-  clearTimeout(searchTimeout);
-  searchTimeout = setTimeout(() => {
-    $('modal-inner').innerHTML = buildProductBrowser(val);
-    const inp = $('search-input');
-    if (inp) { inp.value = val; inp.focus(); inp.setSelectionRange(val.length, val.length); }
-  }, 200);
-}
-
-function pickProduct(id, code, name, category) {
-  selectedProduct = { id, code, name, category };
-  const inp = $('search-input');
-  const val = inp ? inp.value : '';
-  $('modal-inner').innerHTML = buildProductBrowser(val);
-  const ninp = $('search-input');
-  if (ninp) { ninp.value = val; ninp.focus(); }
-}
-
-function clearPick() { selectedProduct = null; const inp = $('search-input'); const val = inp ? inp.value : ''; $('modal-inner').innerHTML = buildProductBrowser(val); const ninp = $('search-input'); if (ninp) { ninp.value = val; ninp.focus(); } }
 
 async function submitRequest() {
-  if (!selectedProduct) return alert('Selecciona un producto');
-  const qty = parseInt($('new-qty').value) || 1;
-  const note = $('new-note').value.trim();
-  const btn = $('submit-req-btn');
+  const desc = $('nr-desc').value.trim();
+  if (!desc) return alert('Escribe qué falta');
+  const qty = parseInt($('nr-qty').value) || 1;
+  const note = $('nr-note').value.trim();
+  const btn = $('nr-submit');
   btn.disabled = true; btn.textContent = 'Enviando...';
   try {
-    await api('/api/requests', { method: 'POST', body: JSON.stringify({ product_id: selectedProduct.id, quantity: qty, note }) });
+    await api('/api/requests', { method: 'POST', body: JSON.stringify({ description: desc, quantity: qty, note }) });
     closeModal('modal-overlay'); await loadData();
   } catch (e) { alert(e.message); }
+  btn.disabled = false; btn.textContent = '📦 Reportar faltante';
 }
 
 /* ===== HISTORY ===== */
@@ -263,7 +191,7 @@ function renderHistory() {
   api('/api/requests/history').then(h => {
     if (h.length === 0) { $('modal-inner').innerHTML = `<div class="modal-header"><h3>📋 Historial</h3><button class="btn btn-ghost btn-sm modal-x" onclick="closeModal('modal-overlay')">✕</button></div><div class="empty-state"><div class="icon">📋</div><p>Vacío</p></div>`; return; }
     $('modal-inner').innerHTML = `<div class="modal-header"><h3>📋 Historial (${h.length})</h3><button class="btn btn-ghost btn-sm modal-x" onclick="closeModal('modal-overlay')">✕</button></div>${
-      h.map(x => `<div class="history-item"><div class="info"><strong>${x.product_name}</strong>${x.product_code ? `<span class="code">${x.product_code}</span>` : ''}<small>${x.quantity} uds — ${x.requester_name}</small></div><div class="date">${x.completed_at ? new Date(x.completed_at).toLocaleDateString() : ''}</div></div>`).join('')
+      h.map(x => `<div class="history-item"><div class="info"><strong>${x.product_name}</strong><small>${x.quantity} uds — ${x.requester_name}</small></div><div class="date">${x.completed_at ? new Date(x.completed_at).toLocaleDateString() : ''}</div></div>`).join('')
     }`;
   }).catch(e => { $('modal-inner').innerHTML = `<div class="alert alert-error">${e.message}</div>`; });
   return '<div class="load-spinner"></div>';
@@ -271,16 +199,22 @@ function renderHistory() {
 
 /* ===== ADMIN ===== */
 function renderAdminPanel() {
+  loadAllProducts();
   return `<div class="modal-header"><h3>⚙️ Panel Admin</h3><button class="btn btn-ghost btn-sm modal-x" onclick="closeModal('modal-overlay')">✕</button></div>
     <div class="admin-tabs">
       <button class="tab active" onclick="switchAdminTab('users',this)">👥 Usuarios</button>
       <button class="tab" onclick="switchAdminTab('products',this)">📦 Productos</button>
       <button class="tab" onclick="switchAdminTab('import',this)">📥 Importar</button>
+      <button class="tab" onclick="switchAdminTab('settings',this)">⚙️ Ajustes</button>
     </div>
     <div id="admin-content"></div>`;
 }
 
-function switchAdminTab(tab, btn) { document.querySelectorAll('.admin-tabs .tab').forEach(t => t.classList.remove('active')); btn.classList.add('active'); if (tab==='users') renderAdminUsers(); else if (tab==='products') renderAdminProducts(); else renderAdminImport(); }
+function switchAdminTab(tab, btn) { document.querySelectorAll('.admin-tabs .tab').forEach(t => t.classList.remove('active')); btn.classList.add('active'); if (tab==='users') renderAdminUsers(); else if (tab==='products') renderAdminProducts(); else if (tab==='import') renderAdminImport(); else renderAdminSettings(); }
+
+async function loadAllProducts() {
+  try { state.allProducts = await api('/api/products'); } catch (_) { state.allProducts = []; }
+}
 
 async function renderAdminUsers() {
   try {
@@ -340,6 +274,46 @@ async function importProducts() {
   try { const r = await api('/api/products/import', { method: 'POST', body: JSON.stringify({products}) }); $('import-result').innerHTML = `<div class="alert alert-success">✅ ${r.imported} importados</div>`; setTimeout(()=>switchAdminTab('products',document.querySelector('.admin-tabs .tab:nth-child(2)')),1500); } catch(e) { $('import-result').innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
 }
 
+/* ADMIN SETTINGS */
+async function renderAdminSettings() {
+  try {
+    const settings = await api('/api/settings');
+    const email = settings.daily_report_email || '';
+    $('admin-content').innerHTML = `
+      <div class="admin-section"><h4>⚙️ Ajustes</h4>
+        <div class="form-group"><label>📧 Correo del jefe (reporte diario)</label>
+          <input type="email" id="set-email" value="${email}" placeholder="jefe@empresa.com" style="width:100%;padding:.75rem;border:2px solid var(--gray-200);border-radius:var(--radius);font-size:1rem">
+        </div>
+        <p class="text-sm text-muted mb-1">El reporte se envía automáticamente a las 7:00 AM (CDMX) con todos los faltantes pendientes.</p>
+        <button class="btn btn-primary btn-block" onclick="saveEmailSettings()">💾 Guardar correo</button>
+        ${email ? `<button class="btn btn-soft btn-block mt-1" onclick="sendTestReport()">📨 Enviar prueba ahora</button>` : ''}
+        <div id="settings-result" class="mt-1"></div>
+      </div>`;
+  } catch (e) { $('admin-content').innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
+}
+
+async function saveEmailSettings() {
+  const email = $('set-email').value.trim();
+  if (!email) return alert('Escribe un correo');
+  const btn = document.querySelector('#admin-content .btn-primary');
+  btn.disabled = true; btn.textContent = 'Guardando...';
+  try {
+    await api('/api/settings', { method: 'PUT', body: JSON.stringify({ daily_report_email: email }) });
+    $('settings-result').innerHTML = '<div class="alert alert-success">✅ Guardado</div>';
+    renderAdminSettings();
+  } catch (e) { $('settings-result').innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
+}
+
+async function sendTestReport() {
+  const btn = document.querySelector('#admin-content .btn-soft');
+  if (btn) { btn.disabled = true; btn.textContent = 'Enviando...'; }
+  try {
+    const r = await api('/api/cron/daily-report', { method: 'POST' });
+    $('settings-result').innerHTML = `<div class="alert alert-success">✅ Enviado a ${r.sent_to}</div>`;
+  } catch (e) { $('settings-result').innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
+  if (btn) { btn.disabled = false; btn.textContent = '📨 Enviar prueba ahora'; }
+}
+
 /* ===== INIT ===== */
 document.addEventListener('DOMContentLoaded', () => {
   const t = localStorage.getItem('sgra_token');
@@ -350,4 +324,4 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 /* GLOBALS */
-Object.assign(window, { handleLogin, handleLogout, switchTab, advance, showDetail, closeModal, openNewRequest, submitRequest, onSearchFilter, pickProduct, clearPick, showModal, showModalContent, renderHistory, renderAdminPanel, switchAdminTab, createUser, deleteUser, renderAdminProducts, showAddProductForm, adminAddProduct, adminDeleteProduct, filterAdminProducts, renderAdminImport, importProducts });
+Object.assign(window, { handleLogin, handleLogout, switchTab, advance, showDetail, closeModal, openNewRequest, submitRequest, showModal, showModalContent, renderHistory, renderAdminPanel, switchAdminTab, createUser, deleteUser, renderAdminProducts, showAddProductForm, adminAddProduct, adminDeleteProduct, filterAdminProducts, renderAdminImport, renderAdminSettings, saveEmailSettings, sendTestReport, importProducts });

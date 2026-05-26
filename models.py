@@ -40,7 +40,8 @@ class Product(Base):
 class Request(Base):
     __tablename__ = "requests"
     id = Column(Integer, primary_key=True, index=True)
-    product_id = Column(Integer, ForeignKey("products.id"))
+    description = Column(String(500), nullable=True)
+    product_id = Column(Integer, ForeignKey("products.id"), nullable=True)
     quantity = Column(Integer)
     note = Column(Text, nullable=True)
     status = Column(String(20), default=RequestStatus.REPORTED)
@@ -50,3 +51,9 @@ class Request(Base):
     completed_at = Column(DateTime, nullable=True)
     product = relationship("Product")
     requester = relationship("User", foreign_keys=[requested_by])
+
+
+class Setting(Base):
+    __tablename__ = "settings"
+    key = Column(String(100), primary_key=True)
+    value = Column(String(500), nullable=True)

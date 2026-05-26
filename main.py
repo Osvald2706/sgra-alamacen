@@ -1,8 +1,12 @@
 import hashlib
 import secrets
+import smtplib
 import csv
 import io
-from datetime import datetime
+import os
+from email.message import EmailMessage
+from datetime import datetime, timedelta
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -12,10 +16,34 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from database import get_db, engine
 import models
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+import pytz
 
 models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="SGRA - Sistema de Gestión de Reposición de Almacén")
+scheduler = AsyncIOScheduler()
+
+MEX_TZ = pytz.timezone("America/Mexico_City")
+
+STATUS_TRANSITIONS = {
+    models.RequestStatus.REPORTED: models.RequestStatus.ORDERED,
+    models.RequestStatus.ORDERED: models.RequestStatus.RECEIVED,
+}
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    scheduler.add_job(
+        send_daily_report_job,
+        CronTrigger(hour=7, minute=0, timezone=MEX_TZ),
+        id="daily_report",
+        replace_existing=True,
+    )
+    scheduler.start()
+    yield
+    scheduler.shutdown()
+
+app = FastAPI(title="SGRA - Sistema de Gestión de Reposición de Almacén", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,16 +55,10 @@ app.add_middleware(
 
 security = HTTPBearer()
 
-STATUS_TRANSITIONS = {
-    models.RequestStatus.REPORTED: models.RequestStatus.ORDERED,
-    models.RequestStatus.ORDERED: models.RequestStatus.RECEIVED,
-}
-
 
 def seed_initial_data(db: Session):
     if db.query(models.User).count() > 0:
         return
-
     users = [
         ("juan", "almacen123", "Juan Pérez", "admin"),
         ("admin", "admin123", "Administrador", "admin"),
@@ -44,7 +66,6 @@ def seed_initial_data(db: Session):
     for username, password, name, role in users:
         h = hashlib.sha256(password.encode()).hexdigest()
         db.add(models.User(username=username, password_hash=h, name=name, role=role))
-
     products = [
         ("G-001", "Caja de 10 guantes talla L", "Equipo protección"),
         ("G-002", "Caja de 100 bolsas plásticas 40x60", "Empaque"),
@@ -61,7 +82,6 @@ def seed_initial_data(db: Session):
     ]
     for code, name, category in products:
         db.add(models.Product(code=code, name=name, category=category))
-
     db.commit()
 
 
@@ -90,7 +110,6 @@ def get_current_user(
 
 # ---------- AUTH ----------
 
-
 @app.post("/api/login")
 def login(data: dict, db: Session = Depends(get_db)):
     username = data.get("username", "")
@@ -108,7 +127,6 @@ def login(data: dict, db: Session = Depends(get_db)):
         "user": {"id": user.id, "name": user.name, "username": user.username, "role": user.role},
     }
 
-
 @app.post("/api/logout")
 def logout(
     credentials: HTTPAuthorizationCredentials = Depends(security),
@@ -118,7 +136,6 @@ def logout(
     db.commit()
     return {"ok": True}
 
-
 @app.get("/api/me")
 def get_me(user=Depends(get_current_user)):
     return {"id": user.id, "name": user.name, "username": user.username, "role": user.role}
@@ -126,6 +143,28 @@ def get_me(user=Depends(get_current_user)):
 
 # ---------- REQUESTS ----------
 
+def request_to_dict(r):
+    now = datetime.now()
+    hours_elapsed = (now - r.created_at).total_seconds() / 3600
+    requires_attention = r.status == models.RequestStatus.REPORTED and hours_elapsed >= 24
+    requires_attention = requires_attention or (r.status == models.RequestStatus.ORDERED and hours_elapsed >= 48)
+    return {
+        "id": r.id,
+        "description": r.description or "",
+        "product_id": r.product_id,
+        "product_code": r.product.code if r.product else "",
+        "product_name": r.description or (r.product.name if r.product else "Desconocido"),
+        "product_category": r.product.category if r.product else "",
+        "quantity": r.quantity,
+        "note": r.note or "",
+        "status": r.status,
+        "requested_by": r.requested_by,
+        "requester_name": r.requester.name if r.requester else "Desconocido",
+        "created_at": r.created_at.isoformat() if r.created_at else "",
+        "updated_at": r.updated_at.isoformat() if r.updated_at else "",
+        "hours_elapsed": round(hours_elapsed, 1),
+        "requires_attention": requires_attention,
+    }
 
 @app.get("/api/requests")
 def list_requests(user=Depends(get_current_user), db: Session = Depends(get_db)):
@@ -135,32 +174,7 @@ def list_requests(user=Depends(get_current_user), db: Session = Depends(get_db))
         .order_by(models.Request.created_at.desc())
         .all()
     )
-    result = []
-    for r in q:
-        now = datetime.now()
-        hours_elapsed = (now - r.created_at).total_seconds() / 3600
-        requires_attention = r.status == models.RequestStatus.REPORTED and hours_elapsed >= 24
-        requires_attention = requires_attention or (r.status == models.RequestStatus.ORDERED and hours_elapsed >= 48)
-        result.append(
-            {
-                "id": r.id,
-                "product_id": r.product_id,
-                "product_code": r.product.code if r.product else "",
-                "product_name": r.product.name if r.product else "Desconocido",
-                "product_category": r.product.category if r.product else "",
-                "quantity": r.quantity,
-                "note": r.note or "",
-                "status": r.status,
-                "requested_by": r.requested_by,
-                "requester_name": r.requester.name if r.requester else "Desconocido",
-                "created_at": r.created_at.isoformat() if r.created_at else "",
-                "updated_at": r.updated_at.isoformat() if r.updated_at else "",
-                "hours_elapsed": round(hours_elapsed, 1),
-                "requires_attention": requires_attention,
-            }
-        )
-    return result
-
+    return [request_to_dict(r) for r in q]
 
 @app.get("/api/requests/history")
 def list_history(user=Depends(get_current_user), db: Session = Depends(get_db)):
@@ -173,28 +187,28 @@ def list_history(user=Depends(get_current_user), db: Session = Depends(get_db)):
     )
     result = []
     for r in q:
-        result.append(
-            {
-                "id": r.id,
-                "product_code": r.product.code if r.product else "",
-                "product_name": r.product.name if r.product else "Desconocido",
-                "quantity": r.quantity,
-                "requester_name": r.requester.name if r.requester else "Desconocido",
-                "status": r.status,
-                "created_at": r.created_at.isoformat() if r.created_at else "",
-                "completed_at": r.completed_at.isoformat() if r.completed_at else "",
-            }
-        )
+        result.append({
+            "id": r.id,
+            "description": r.description or "",
+            "product_code": r.product.code if r.product else "",
+            "product_name": r.description or (r.product.name if r.product else "Desconocido"),
+            "quantity": r.quantity,
+            "requester_name": r.requester.name if r.requester else "Desconocido",
+            "status": r.status,
+            "created_at": r.created_at.isoformat() if r.created_at else "",
+            "completed_at": r.completed_at.isoformat() if r.completed_at else "",
+        })
     return result
-
 
 @app.post("/api/requests")
 def create_request(data: dict, user=Depends(get_current_user), db: Session = Depends(get_db)):
-    product = db.query(models.Product).filter(models.Product.id == data["product_id"]).first()
-    if not product:
-        raise HTTPException(status_code=400, detail="Producto no encontrado")
+    description = data.get("description", "").strip()
+    product_id = data.get("product_id")
+    if not description:
+        raise HTTPException(status_code=400, detail="Describe qué falta")
     r = models.Request(
-        product_id=data["product_id"],
+        description=description,
+        product_id=product_id if product_id else None,
         quantity=data.get("quantity", 1),
         note=data.get("note", ""),
         requested_by=user.id,
@@ -202,8 +216,7 @@ def create_request(data: dict, user=Depends(get_current_user), db: Session = Dep
     db.add(r)
     db.commit()
     db.refresh(r)
-    return {"id": r.id, "status": r.status, "product_name": product.name}
-
+    return {"id": r.id, "status": r.status}
 
 @app.put("/api/requests/{request_id}/status")
 def update_status(
@@ -229,7 +242,6 @@ def update_status(
         detail=f"No se puede cambiar de '{r.status}' a '{new_status}'",
     )
 
-
 @app.delete("/api/requests/{request_id}")
 def delete_request(
     request_id: int,
@@ -248,12 +260,10 @@ def delete_request(
 
 # ---------- PRODUCTS ----------
 
-
 @app.get("/api/products")
 def list_products(user=Depends(get_current_user), db: Session = Depends(get_db)):
     q = db.query(models.Product).order_by(models.Product.category, models.Product.code).all()
     return [{"id": p.id, "code": p.code or "", "name": p.name, "category": p.category} for p in q]
-
 
 @app.get("/api/products/search")
 def search_products(q: str = "", user=Depends(get_current_user), db: Session = Depends(get_db)):
@@ -268,12 +278,10 @@ def search_products(q: str = "", user=Depends(get_current_user), db: Session = D
     )
     return [{"id": p.id, "code": p.code or "", "name": p.name, "category": p.category} for p in results]
 
-
 @app.get("/api/products/categories")
 def list_categories(user=Depends(get_current_user), db: Session = Depends(get_db)):
     cats = db.query(models.Product.category).distinct().all()
     return sorted([c[0] for c in cats if c[0]])
-
 
 @app.post("/api/products")
 def create_product(data: dict, user=Depends(get_current_user), db: Session = Depends(get_db)):
@@ -284,7 +292,6 @@ def create_product(data: dict, user=Depends(get_current_user), db: Session = Dep
     db.commit()
     db.refresh(p)
     return {"id": p.id, "code": p.code, "name": p.name, "category": p.category}
-
 
 @app.post("/api/products/import")
 def import_products(data: dict, user=Depends(get_current_user), db: Session = Depends(get_db)):
@@ -313,7 +320,6 @@ def import_products(data: dict, user=Depends(get_current_user), db: Session = De
     db.commit()
     return {"imported": count}
 
-
 @app.delete("/api/products/{product_id}")
 def delete_product(
     product_id: int,
@@ -332,14 +338,12 @@ def delete_product(
 
 # ---------- USERS ----------
 
-
 @app.get("/api/users")
 def list_users(user=Depends(get_current_user), db: Session = Depends(get_db)):
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="Solo administradores")
     q = db.query(models.User).all()
     return [{"id": u.id, "name": u.name, "username": u.username, "role": u.role} for u in q]
-
 
 @app.post("/api/users")
 def create_user(data: dict, user=Depends(get_current_user), db: Session = Depends(get_db)):
@@ -361,7 +365,6 @@ def create_user(data: dict, user=Depends(get_current_user), db: Session = Depend
     db.refresh(u)
     return {"id": u.id, "name": u.name, "username": u.username, "role": u.role}
 
-
 @app.delete("/api/users/{user_id}")
 def delete_user(
     user_id: int,
@@ -378,7 +381,6 @@ def delete_user(
     db.delete(u)
     db.commit()
     return {"ok": True}
-
 
 @app.put("/api/users/{user_id}/password")
 def change_password(
@@ -400,15 +402,118 @@ def change_password(
     return {"ok": True}
 
 
+# ---------- SETTINGS ----------
+
+@app.get("/api/settings")
+def get_settings(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Solo administradores")
+    rows = db.query(models.Setting).all()
+    return {r.key: r.value for r in rows}
+
+@app.put("/api/settings")
+def update_settings(data: dict, user=Depends(get_current_user), db: Session = Depends(get_db)):
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Solo administradores")
+    for key, value in data.items():
+        setting = db.query(models.Setting).filter(models.Setting.key == key).first()
+        if setting:
+            setting.value = str(value)
+        else:
+            db.add(models.Setting(key=key, value=str(value)))
+    db.commit()
+    return {"ok": True}
+
+
+# ---------- DAILY REPORT ----------
+
+def build_report_html(db: Session) -> str:
+    pendientes = (
+        db.query(models.Request)
+        .filter(models.Request.status.in_([models.RequestStatus.REPORTED, models.RequestStatus.ORDERED]))
+        .order_by(models.Request.created_at.desc())
+        .all()
+    )
+    if not pendientes:
+        return "<p>No hay faltantes reportados.</p>"
+
+    rows_html = ""
+    for r in pendientes:
+        status_emoji = "⏳" if r.status == "reportado" else "📤"
+        name = r.description or (r.product.name if r.product else "Desconocido")
+        rows_html += f"""
+        <tr>
+            <td style="padding:8px 12px;border-bottom:1px solid #e5e7eb">{status_emoji}</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #e5e7eb">{name}</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #e5e7eb">{r.quantity}</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #e5e7eb">{r.requester.name if r.requester else '—'}</td>
+        </tr>"""
+
+    return f"""
+    <table style="width:100%;border-collapse:collapse;font-family:Inter,sans-serif;font-size:14px">
+        <thead>
+            <tr style="background:#4f46e5;color:white;text-align:left">
+                <th style="padding:10px 12px">Estado</th>
+                <th style="padding:10px 12px">Producto</th>
+                <th style="padding:10px 12px">Cant</th>
+                <th style="padding:10px 12px">Reportó</th>
+            </tr>
+        </thead>
+        <tbody>{rows_html}</tbody>
+    </table>"""
+
+
+def send_email(to: str, subject: str, html_body: str):
+    sg_key = os.environ.get("SENDGRID_API_KEY", "")
+    if not sg_key:
+        return
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = "sgra@sttgroup.com.mx"
+    msg["To"] = to
+    msg.set_content("Este correo requiere HTML.", "plain")
+    msg.add_alternative(html_body, subtype="html")
+
+    with smtplib.SMTP("smtp.sendgrid.net", 587) as server:
+        server.starttls()
+        server.login("apikey", sg_key)
+        server.send_message(msg)
+
+
+async def send_daily_report_job():
+    db = next(get_db())
+    try:
+        to = db.query(models.Setting).filter(models.Setting.key == "daily_report_email").first()
+        if not to or not to.value:
+            return
+        html = build_report_html(db)
+        date_str = datetime.now(MEX_TZ).strftime("%d/%m/%Y")
+        send_email(to.value, f"📦 Reporte diario SGRA - {date_str}", html)
+    finally:
+        db.close()
+
+
+@app.post("/api/cron/daily-report")
+def trigger_daily_report(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Admin can trigger the report manually, or Railway cron can call this."""
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Solo administradores")
+    to = db.query(models.Setting).filter(models.Setting.key == "daily_report_email").first()
+    if not to or not to.value:
+        raise HTTPException(status_code=400, detail="Configura primero el correo del destinatario en Ajustes")
+    html = build_report_html(db)
+    date_str = datetime.now(MEX_TZ).strftime("%d/%m/%Y")
+    send_email(to.value, f"📦 Reporte diario SGRA - {date_str}", html)
+    return {"ok": True, "sent_to": to.value}
+
+
 # ---------- FRONTEND ----------
 
 app.mount("/static", StaticFiles(directory="frontend"), name="static")
 
-
 @app.get("/")
 def index():
     return FileResponse("frontend/index.html")
-
 
 @app.exception_handler(404)
 async def not_found(request, exc):
