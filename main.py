@@ -33,6 +33,11 @@ STATUS_TRANSITIONS = {
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    db = next(get_db())
+    try:
+        seed_initial_data(db)
+    finally:
+        db.close()
     scheduler.add_job(
         send_daily_report_job,
         CronTrigger(hour=7, minute=0, timezone=MEX_TZ),
@@ -83,15 +88,6 @@ def seed_initial_data(db: Session):
     for code, name, category in products:
         db.add(models.Product(code=code, name=name, category=category))
     db.commit()
-
-
-@app.on_event("startup")
-def startup():
-    db = next(get_db())
-    try:
-        seed_initial_data(db)
-    finally:
-        db.close()
 
 
 def get_current_user(
